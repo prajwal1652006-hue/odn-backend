@@ -13,6 +13,8 @@ from app.utils.security import hash_password, verify_password, create_access_tok
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
+DUMMY_GOOGLE_HASH = "$2b$12$e8Y7YtL4Xk5vJ8xGz9e0uO1W2X3Y4Z5a6b7c8d9e0f1g2h3i4j5k6"
+
 def get_role_str(role_val) -> str:
     if hasattr(role_val, "value"):
         return str(role_val.value)
@@ -111,7 +113,7 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
 
         user = User(
             phone_number=synthetic_phone,
-            password_hash=hash_password("GoogleAuthPass2026"),
+            password_hash=DUMMY_GOOGLE_HASH,
             full_name=f"Google Partner ({target_role_str.title()})",
             role=target_role_enum
         )
@@ -153,7 +155,7 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Google auth error: {str(e)}"
+            detail=f"Google deploy error: {str(e)}"
         )
 
 @router.get("/me", response_model=UserProfileResponse)

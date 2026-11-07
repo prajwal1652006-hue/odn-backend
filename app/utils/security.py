@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional
 import bcrypt
@@ -12,18 +13,25 @@ from app.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
+def prepare_password(password: str) -> str:
+    """Pre-hash passwords to a fixed-length value before bcrypt."""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
 def hash_password(password: str) -> str:
-    """Hashes password using native bcrypt directly, bypassing passlib compatibility bugs."""
-    pwd_bytes = password.encode('utf-8')[:72]
+    pwd_bytes = prepare_password(password).encode("utf-8")
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(pwd_bytes, salt)
     return hashed.decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifies plain text password against hashed bcrypt string."""
-    pwd_bytes = plain_password.encode('utf-8')[:72]
     hash_bytes = hashed_password.encode('utf-8')
-    return bcrypt.checkpw(pwd_bytes, hash_bytes)
+    prepared_bytes = prepare_password(plain_password).encode("utf-8")
+    if bcrypt.checkpw(prepared_bytes, hash_bytes):
+        return True
+
+    # Keep passwords hashed before this migration verifiable.
+    legacy_bytes = plain_password.encode("utf-8")[:72]
+    return bcrypt.checkpw(legacy_bytes, hash_bytes)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
