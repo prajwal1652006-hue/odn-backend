@@ -13,35 +13,45 @@ from app.utils.security import hash_password, verify_password, create_access_tok
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
+def get_role_str(role_val) -> str:
+    if hasattr(role_val, "value"):
+        return str(role_val.value)
+    return str(role_val)
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 def register_user(payload: UserRegisterRequest, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.phone_number == payload.phone_number).first()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Phone number is already registered"
+            detail="Phone number is already registered. Please login or try a different number."
         )
+
+    try:
+        user_role_enum = UserRole(payload.role.upper())
+    except ValueError:
+        user_role_enum = UserRole.RIDER
 
     new_user = User(
         phone_number=payload.phone_number,
         password_hash=hash_password(payload.password),
         full_name=payload.full_name,
-        role=payload.role
+        role=user_role_enum
     )
     db.add(new_user)
     db.flush()
 
-    if payload.role == UserRole.RIDER:
+    if user_role_enum == UserRole.RIDER:
         license_num = payload.license_number or f"DL-{random.randint(100000, 999999)}"
         rider_profile = Rider(
             user_id=new_user.id,
-            vehicle_type=payload.vehicle_type or VehicleType.BIKE,
+            vehicle_type=VehicleType.BIKE,
             license_number=license_num,
             kyc_status=KYCStatus.VERIFIED
         )
         db.add(rider_profile)
 
-    elif payload.role == UserRole.BUSINESS:
+    elif user_role_enum == UserRole.BUSINESS:
         store_name = payload.business_name or f"{payload.full_name}'s Store"
         category = payload.business_category or "GROCERY"
         address = payload.pickup_address or "Indiranagar 100ft Rd, Bengaluru"
@@ -62,11 +72,12 @@ def register_user(payload: UserRegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
-    access_token = create_access_token(data={"sub": str(new_user.id), "role": new_user.role.value})
+    role_str = get_role_str(new_user.role)
+    access_token = create_access_token(data={"sub": str(new_user.id), "role": role_str})
     return TokenResponse(
         access_token=access_token,
         user_id=new_user.id,
-        role=new_user.role,
+        role=role_str,
         full_name=new_user.full_name
     )
 
@@ -79,68 +90,71 @@ def login_user(payload: UserLoginRequest, db: Session = Depends(get_db)):
             detail="Invalid phone number or password"
         )
 
-    access_token = create_access_token(data={"sub": str(user.id), "role": user.role.value})
+    role_str = get_role_str(user.role)
+    access_token = create_access_token(data={"sub": str(user.id), "role": role_str})
     return TokenResponse(
         access_token=access_token,
         user_id=user.id,
-        role=user.role,
+        role=role_str,
         full_name=user.full_name
     )
 
 @router.post("/google", response_model=TokenResponse)
 def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
     try:
-        # Resolve role enum cleanly
-        target_role = UserRole.BUSINESS if payload.role.upper() == "BUSINESS" else UserRole.RIDER
+        target_role_str = payload.role.upper()
+        target_role_enum = UserRole.BUSINESS if target_role_str == "BUSINESS" else UserRole.RIDER
 
-        # Deterministic phone number per role for testing
-        role_tag = "99" if target_role == UserRole.RIDER else "88"
-        synthetic_phone = f"+9198{role_tag}001122"
+        random_suffix = random.randint(100000, 999999)
+        role_prefix = "88" if target_role_enum == UserRole.BUSINESS else "99"
+        synthetic_phone = f"+91{role_prefix}{random_suffix}"
 
-        user = db.query(User).filter(User.phone_number == synthetic_phone).first()
+        user = User(
+            phone_number=synthetic_phone,
+            password_hash=hash_password("GoogleAuthPass2026"),
+            full_name=f"Google Partner ({target_role_str.title()})",
+            role=target_role_enum
+        )
+        db.add(user)
+        db.flush()
 
-        if not user:
-            user = User(
-                phone_number=synthetic_phone,
-                password_hash=hash_password("GoogleAuth2026!"),
-                full_name="Google Partner User",
-                role=target_role
+        if target_role_enum == UserRole.RIDER:
+            rider_profile = Rider(
+                user_id=user.id,
+                vehicle_type=VehicleType.BIKE,
+                license_number=f"KA-GOOG-{random_suffix}",
+                kyc_status=KYCStatus.VERIFIED
             )
-            db.add(user)
-            db.flush()
+            db.add(rider_profile)
+        else:
+            pickup_geom = WKTElement("POINT(77.6408 12.9783)", srid=4326)
+            business_profile = Business(
+                user_id=user.id,
+                business_name="Google Partner Hub",
+                business_category="RESTAURANT",
+                pickup_address="Indiranagar 100ft Rd, Bengaluru",
+                pickup_location=pickup_geom,
+                contact_phone=synthetic_phone
+            )
+            db.add(business_profile)
 
-            if target_role == UserRole.RIDER:
-                rider_profile = Rider(
-                    user_id=user.id,
-                    vehicle_type=VehicleType.BIKE,
-                    license_number="KA-GOOG-9988",
-                    kyc_status=KYCStatus.VERIFIED
-                )
-                db.add(rider_profile)
-            else:
-                pickup_geom = WKTElement("POINT(77.6408 12.9783)", srid=4326)
-                business_profile = Business(
-                    user_id=user.id,
-                    business_name="Google Store Hub",
-                    business_category="RESTAURANT",
-                    pickup_address="Indiranagar 100ft Rd, Bengaluru",
-                    pickup_location=pickup_geom,
-                    contact_phone=synthetic_phone
-                )
-                db.add(business_profile)
+        db.commit()
+        db.refresh(user)
 
-            db.commit()
-            db.refresh(user)
-
-        access_token = create_access_token(data={"sub": str(user.id), "role": user.role.value})
+        role_str = get_role_str(user.role)
+        access_token = create_access_token(data={"sub": str(user.id), "role": role_str})
         return TokenResponse(
             access_token=access_token,
             user_id=user.id,
-            role=user.role,
+            role=role_str,
             full_name=user.full_name
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Google login engine error: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Google auth error: {str(e)}"
+        )
 
 @router.get("/me", response_model=UserProfileResponse)
 def get_user_profile(current_user: User = Depends(get_current_user)):
